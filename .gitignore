@@ -1,0 +1,7 @@
+# Local build output
+nprime
+*.o
+*.dSYM/
+
+# OS/editor noise
+.DS_Store
