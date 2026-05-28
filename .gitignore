@@ -1,5 +1,7 @@
 # Local build output
 nprime
+nprime.wasm
+_site/
 *.o
 *.dSYM/
 

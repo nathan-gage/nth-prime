@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>nprime WebAssembly benchmark</title>
+    <meta
+      name="description"
+      content="Dependency-free WebAssembly demonstration of exact nth-prime inversion using analytic estimates, Lehmer prime counting, and segmented sieving."
+    >
+    <link rel="stylesheet" href="styles.css?v=20260528-2">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Exact inverse prime-counting in WebAssembly</p>
+        <h1>nprime</h1>
+        <p class="lede">
+          A static, dependency-free benchmark page for computing the 1-indexed
+          value p<sub>n</sub>, the inverse of &pi;(x).
+        </p>
+      </div>
+      <div class="header-actions">
+        <a class="source-link" href="https://github.com/nathan-gage/nth-prime" target="_blank" rel="noopener noreferrer">
+          <svg class="source-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 1024 1024" fill="none" aria-hidden="true" focusable="false">
+            <path fill-rule="evenodd" clip-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8C0 11.54 2.29 14.53 5.47 15.59C5.87 15.66 6.02 15.42 6.02 15.21C6.02 15.02 6.01 14.39 6.01 13.72C4 14.09 3.48 13.23 3.32 12.78C3.23 12.55 2.84 11.84 2.5 11.65C2.22 11.5 1.82 11.13 2.49 11.12C3.12 11.11 3.57 11.7 3.72 11.94C4.44 13.15 5.59 12.81 6.05 12.6C6.12 12.08 6.33 11.73 6.56 11.53C4.78 11.33 2.92 10.64 2.92 7.58C2.92 6.71 3.23 5.99 3.74 5.43C3.66 5.23 3.38 4.41 3.82 3.31C3.82 3.31 4.49 3.1 6.02 4.13C6.66 3.95 7.34 3.86 8.02 3.86C8.7 3.86 9.38 3.95 10.02 4.13C11.55 3.09 12.22 3.31 12.22 3.31C12.66 4.41 12.38 5.23 12.3 5.43C12.81 5.99 13.12 6.7 13.12 7.58C13.12 10.65 11.25 11.33 9.47 11.53C9.76 11.78 10.01 12.26 10.01 13.01C10.01 14.08 10 14.94 10 15.21C10 15.42 10.15 15.67 10.55 15.59C13.71 14.53 16 11.53 16 8C16 3.58 12.42 0 8 0Z" transform="scale(64)" fill="currentColor"/>
+          </svg>
+          <span>GitHub source</span>
+        </a>
+        <div class="build-status" id="wasmStatus">Loading WASM...</div>
+      </div>
+    </header>
+
+    <main>
+      <section class="workbench" aria-labelledby="benchTitle">
+        <div class="bench-controls">
+          <div>
+            <p class="eyebrow">Benchmark target</p>
+            <h2 id="benchTitle">Run an isolated inversion</h2>
+          </div>
+
+          <label class="field">
+            <span>n</span>
+            <input id="nInput" inputmode="numeric" spellcheck="false" value="1,000,000,000">
+          </label>
+
+          <div class="preset-row" aria-label="Preset benchmark values">
+            <button class="preset" type="button" data-n="1000000">1M</button>
+            <button class="preset" type="button" data-n="200000000">200M</button>
+            <button class="preset" type="button" data-n="1000000000">1B</button>
+            <button class="preset" type="button" data-n="5000000000">5B</button>
+            <button class="preset" type="button" data-n="9999999999">10B - 1</button>
+          </div>
+
+          <label class="field">
+            <span>iterations</span>
+            <input id="iterationsInput" inputmode="numeric" spellcheck="false" value="10">
+          </label>
+
+          <div class="action-row">
+            <button id="runOnceButton" type="button">Compute once</button>
+            <button id="runBenchButton" class="primary" type="button">Benchmark isolated</button>
+            <button id="traceButton" type="button">Trace correction</button>
+          </div>
+
+          <dl class="protocol">
+            <div>
+              <dt>Measurement protocol</dt>
+              <dd>Every measured call enters <code>nth_prime_isolated</code>, which resets module state before and after the computation.</dd>
+            </div>
+            <div>
+              <dt>Permitted state</dt>
+              <dd>Scratch sieves, &phi; rows, exact rank data, and segment plans are generated inside one call and discarded.</dd>
+            </div>
+            <div>
+              <dt>Timer resolution</dt>
+              <dd id="timerResolution">Measuring...</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="bench-results" aria-live="polite">
+          <div class="result-grid">
+            <div class="metric">
+              <span>nth prime</span>
+              <strong id="primeOutput">-</strong>
+            </div>
+            <div class="metric">
+              <span>isolated call</span>
+              <strong id="singleOutput">-</strong>
+            </div>
+            <div class="metric">
+              <span>avg time</span>
+              <strong id="avgOutput">-</strong>
+            </div>
+            <div class="metric">
+              <span>throughput</span>
+              <strong id="throughputOutput">-</strong>
+            </div>
+          </div>
+
+          <canvas id="sieveCanvas" width="960" height="360" aria-label="Segmented sieve visualization"></canvas>
+
+          <section class="trace-panel" aria-labelledby="traceTitle">
+            <div>
+              <p class="eyebrow">Simulation</p>
+              <h3 id="traceTitle">Exact rank-correction trace</h3>
+            </div>
+            <p id="traceSummary">
+              Run a trace to compare the analytic coordinate x<sub>0</sub>, exact &pi;(x<sub>0</sub>),
+              the density correction x<sub>1</sub>, and the final local sieve direction.
+            </p>
+            <div class="trace-grid" id="traceGrid"></div>
+          </section>
+
+          <div class="table-wrap">
+            <table class="history-table">
+              <thead>
+                <tr>
+                  <th>n</th>
+                  <th>result</th>
+                  <th>iterations</th>
+                  <th>total ms</th>
+                  <th>avg ms</th>
+                </tr>
+              </thead>
+              <tbody id="historyBody">
+                <tr>
+                  <td colspan="5">No benchmark runs yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section-block" aria-labelledby="resultsTitle">
+        <p class="eyebrow">Empirical profile</p>
+        <h2 id="resultsTitle">Representative native results</h2>
+        <p>
+          The browser benchmark is useful for sharing the method, but the native CLI is the
+          cleaner latency instrument. These isolated local measurements were collected from this
+          checkout on May 28, 2026; rerun the native CLI on your machine before comparing
+          absolute numbers.
+        </p>
+        <p class="hardware-note">
+          Measurement host: Apple M4 Pro, 14-core CPU, 48 GiB memory, macOS 26.5 arm64,
+          compiled with the repository default native flags.
+        </p>
+
+        <div class="table-wrap">
+          <table class="analysis-table">
+            <thead>
+              <tr>
+                <th>n</th>
+                <th>p<sub>n</sub></th>
+                <th>iterations</th>
+                <th>avg latency</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>1,000,000</td>
+                <td>15,485,863</td>
+                <td>5</td>
+                <td>0.070750 ms</td>
+              </tr>
+              <tr>
+                <td>1,000,000,000</td>
+                <td>22,801,763,489</td>
+                <td>5</td>
+                <td>1.184142 ms</td>
+              </tr>
+              <tr>
+                <td>9,999,999,999</td>
+                <td>252,097,800,611</td>
+                <td>2</td>
+                <td>4.589854 ms</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="phase-grid">
+          <article>
+            <h3>1B phase split</h3>
+            <p>
+              Setup: 0.439 ms. Exact Lehmer core: 1.086 ms. Final correction
+              sieve: 0.136 ms. The dominant term is the exact count, not the
+              local prime-gap walk.
+            </p>
+          </article>
+          <article>
+            <h3>10B - 1 phase split</h3>
+            <p>
+              Setup: 1.537 ms. Exact Lehmer core: 3.482 ms. Final correction
+              sieve: 0.727 ms. Recursive count calls are concentrated in the
+              top-level Lehmer subtraction terms.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="paper" aria-labelledby="paperTitle">
+        <p class="eyebrow">Technical note</p>
+        <h2 id="paperTitle">Exact inversion of the prime-counting function</h2>
+
+        <div class="paper-body">
+          <section class="abstract">
+            <h3>Abstract</h3>
+            <p>
+              Given a rank n, the program returns the unique prime p<sub>n</sub>.
+              The computation is organized as a certification pipeline: estimate
+              a coordinate, compute its exact prime-counting rank, correct the
+              coordinate if the rank error is large, then perform a short exact
+              segmented sieve to land on the target prime. No approximate step is
+              trusted as a result.
+            </p>
+          </section>
+
+          <section class="pipeline" aria-label="Algorithm pipeline">
+            <div>
+              <span>1</span>
+              <strong>Estimate</strong>
+              <p>Use an asymptotic inverse to propose x<sub>0</sub>.</p>
+            </div>
+            <div>
+              <span>2</span>
+              <strong>Count</strong>
+              <p>Compute &pi;(x<sub>0</sub>) exactly by Lehmer counting.</p>
+            </div>
+            <div>
+              <span>3</span>
+              <strong>Correct</strong>
+              <p>Move by local density and recount exactly.</p>
+            </div>
+            <div>
+              <span>4</span>
+              <strong>Sieve</strong>
+              <p>Segment-sieve the residual rank gap.</p>
+            </div>
+            <div>
+              <span>5</span>
+              <strong>Certify</strong>
+              <p>Return only the prime whose exact rank is n.</p>
+            </div>
+          </section>
+
+          <section class="paper-step">
+            <h3>1. Definition and correctness invariant</h3>
+            <p>
+              The inverse is formulated as the first integer whose exact prime
+              count reaches n. For n &ge; 1, correctness is certified by the two
+              inequalities &pi;(p<sub>n</sub>) = n and
+              &pi;(p<sub>n</sub> - 1) = n - 1. The program therefore reduces
+              inversion to one exact global count and one exact local search.
+            </p>
+            <figure class="equation" aria-label="p sub n equals the minimum x in the natural numbers such that pi of x is at least n">
+              <math display="block">
+                <msub><mi>p</mi><mi>n</mi></msub>
+                <mo>=</mo>
+                <mi>min</mi>
+                <mo>{</mo>
+                <mi>x</mi>
+                <mo>&Element;</mo>
+                <mi>&Nopf;</mi>
+                <mo>:</mo>
+                <mi>&pi;</mi>
+                <mo>(</mo><mi>x</mi><mo>)</mo>
+                <mo>&ge;</mo>
+                <mi>n</mi>
+                <mo>}</mo>
+              </math>
+            </figure>
+          </section>
+
+          <section class="paper-step">
+            <h3>2. Coordinate proposal by asymptotic inversion</h3>
+            <p>
+              The first coordinate x<sub>0</sub> is a Cipolla-style asymptotic
+              inverse. Let L = log n and &ell; = log L. Keeping terms through
+              L<sup>-4</sup> gives a coordinate whose rank error is small enough
+              that the subsequent correction and segment search are bounded.
+            </p>
+            <figure class="equation wide" aria-label="Cipolla expansion for the initial nth-prime coordinate">
+              <math display="block">
+                <mtable>
+                  <mtr>
+                    <mtd>
+                      <msub><mi>x</mi><mn>0</mn></msub>
+                      <mo>=</mo>
+                      <mi>n</mi>
+                      <mo>(</mo>
+                      <mi>L</mi>
+                      <mo>+</mo>
+                      <mi>&ell;</mi>
+                      <mo>-</mo>
+                      <mn>1</mn>
+                      <mo>+</mo>
+                      <mfrac>
+                        <mrow><mi>&ell;</mi><mo>-</mo><mn>2</mn></mrow>
+                        <mi>L</mi>
+                      </mfrac>
+                      <mo>-</mo>
+                      <mfrac>
+                        <mrow>
+                          <msup><mi>&ell;</mi><mn>2</mn></msup>
+                          <mo>-</mo><mn>6</mn><mi>&ell;</mi>
+                          <mo>+</mo><mn>11</mn>
+                        </mrow>
+                        <mrow><mn>2</mn><msup><mi>L</mi><mn>2</mn></msup></mrow>
+                      </mfrac>
+                    </mtd>
+                  </mtr>
+                  <mtr>
+                    <mtd>
+                      <mo>+</mo>
+                      <mfrac>
+                        <mrow>
+                          <msup><mi>&ell;</mi><mn>3</mn></msup>
+                          <mo>-</mo><mn>9</mn><msup><mi>&ell;</mi><mn>2</mn></msup>
+                          <mo>+</mo><mn>23</mn><mi>&ell;</mi>
+                          <mo>-</mo><mn>11</mn>
+                        </mrow>
+                        <mrow><mn>6</mn><msup><mi>L</mi><mn>3</mn></msup></mrow>
+                      </mfrac>
+                      <mo>+</mo>
+                      <mfrac>
+                        <mrow>
+                          <mn>2</mn><msup><mi>&ell;</mi><mn>4</mn></msup>
+                          <mo>-</mo><mn>60</mn><msup><mi>&ell;</mi><mn>3</mn></msup>
+                          <mo>+</mo><mn>570</mn><msup><mi>&ell;</mi><mn>2</mn></msup>
+                          <mo>-</mo><mn>1920</mn><mi>&ell;</mi>
+                          <mo>+</mo><mn>2309</mn>
+                        </mrow>
+                        <mrow><mn>24</mn><msup><mi>L</mi><mn>4</mn></msup></mrow>
+                      </mfrac>
+                      <mo>)</mo>
+                    </mtd>
+                  </mtr>
+                </mtable>
+              </math>
+            </figure>
+          </section>
+
+          <section class="paper-step">
+            <h3>3. Exact rank certification by Lehmer counting</h3>
+            <p>
+              The rank r<sub>0</sub> = &pi;(x<sub>0</sub>) is computed exactly.
+              The implementation uses a Lehmer decomposition with generated
+              per-call prime tables. With a = &pi;(x<sup>1/4</sup>),
+              b = &pi;(x<sup>1/2</sup>), and c = &pi;(x<sup>1/3</sup>), the
+              top-level count separates a partial sieve term from one-prime and
+              two-prime subtraction terms.
+            </p>
+            <figure class="equation wide" aria-label="Lehmer prime counting recurrence">
+              <math display="block">
+                <mtable>
+                  <mtr>
+                    <mtd>
+                      <mi>&pi;</mi><mo>(</mo><mi>x</mi><mo>)</mo>
+                      <mo>=</mo>
+                      <mi>&phi;</mi><mo>(</mo><mi>x</mi><mo>,</mo><mi>a</mi><mo>)</mo>
+                      <mo>+</mo>
+                      <mfrac>
+                        <mrow>
+                          <mo>(</mo><mi>b</mi><mo>+</mo><mi>a</mi><mo>-</mo><mn>2</mn><mo>)</mo>
+                          <mo>(</mo><mi>b</mi><mo>-</mo><mi>a</mi><mo>+</mo><mn>1</mn><mo>)</mo>
+                        </mrow>
+                        <mn>2</mn>
+                      </mfrac>
+                      <mo>-</mo>
+                      <munderover>
+                        <mo>&sum;</mo>
+                        <mrow><mi>i</mi><mo>=</mo><mi>a</mi></mrow>
+                        <mrow><mi>b</mi><mo>-</mo><mn>1</mn></mrow>
+                      </munderover>
+                      <mi>&pi;</mi>
+                      <mo>(</mo>
+                      <mo>&lfloor;</mo>
+                      <mfrac><mi>x</mi><msub><mi>p</mi><mi>i</mi></msub></mfrac>
+                      <mo>&rfloor;</mo>
+                      <mo>)</mo>
+                    </mtd>
+                  </mtr>
+                  <mtr>
+                    <mtd>
+                      <mo>-</mo>
+                      <munderover>
+                        <mo>&sum;</mo>
+                        <mrow><mi>i</mi><mo>=</mo><mi>a</mi></mrow>
+                        <mrow><mi>c</mi><mo>-</mo><mn>1</mn></mrow>
+                      </munderover>
+                      <munderover>
+                        <mo>&sum;</mo>
+                        <mrow><mi>j</mi><mo>=</mo><mi>i</mi></mrow>
+                        <mrow><mi>&pi;</mi><mo>(</mo><msqrt><mfrac><mi>x</mi><msub><mi>p</mi><mi>i</mi></msub></mfrac></msqrt><mo>)</mo><mo>-</mo><mn>1</mn></mrow>
+                      </munderover>
+                      <mo>(</mo>
+                      <mi>&pi;</mi>
+                      <mo>(</mo>
+                      <mo>&lfloor;</mo>
+                      <mfrac><mi>x</mi><mrow><msub><mi>p</mi><mi>i</mi></msub><msub><mi>p</mi><mi>j</mi></msub></mrow></mfrac>
+                      <mo>&rfloor;</mo>
+                      <mo>)</mo>
+                      <mo>-</mo>
+                      <mi>j</mi>
+                      <mo>)</mo>
+                    </mtd>
+                  </mtr>
+                </mtable>
+              </math>
+            </figure>
+          </section>
+
+          <section class="paper-step">
+            <h3>4. Runtime-generated partial sieve data</h3>
+            <p>
+              The partial sieve function &phi;(x, a) counts integers not
+              divisible by the first a primes. Small &phi; rows and direct rank
+              data are generated during one invocation, used to answer exact
+              subqueries, and discarded before the next measured call.
+            </p>
+            <figure class="equation" aria-label="Recursive definition of phi x a">
+              <math display="block">
+                <mi>&phi;</mi><mo>(</mo><mi>x</mi><mo>,</mo><mi>a</mi><mo>)</mo>
+                <mo>=</mo>
+                <mi>&phi;</mi><mo>(</mo><mi>x</mi><mo>,</mo><mi>a</mi><mo>-</mo><mn>1</mn><mo>)</mo>
+                <mo>-</mo>
+                <mi>&phi;</mi>
+                <mo>(</mo>
+                <mo>&lfloor;</mo>
+                <mfrac><mi>x</mi><msub><mi>p</mi><mi>a</mi></msub></mfrac>
+                <mo>&rfloor;</mo>
+                <mo>,</mo>
+                <mi>a</mi><mo>-</mo><mn>1</mn>
+                <mo>)</mo>
+              </math>
+            </figure>
+          </section>
+
+          <section class="paper-step">
+            <h3>5. Rank-error correction</h3>
+            <p>
+              Let d<sub>0</sub> = &pi;(x<sub>0</sub>) - n. When the absolute
+              error is material, the algorithm proposes a density correction
+              using d&pi;/dx &asymp; 1/log x. The corrected coordinate is counted
+              exactly and accepted only if it reduces |d<sub>0</sub>|.
+            </p>
+            <figure class="equation" aria-label="Newton style correction for the nth prime coordinate">
+              <math display="block">
+                <msub><mi>x</mi><mn>1</mn></msub>
+                <mo>=</mo>
+                <msub><mi>x</mi><mn>0</mn></msub>
+                <mo>-</mo>
+                <mo>(</mo>
+                <mi>&pi;</mi><mo>(</mo><msub><mi>x</mi><mn>0</mn></msub><mo>)</mo>
+                <mo>-</mo><mi>n</mi>
+                <mo>)</mo>
+                <mi>log</mi>
+                <msub><mi>x</mi><mn>0</mn></msub>
+              </math>
+            </figure>
+          </section>
+
+          <section class="paper-step">
+            <h3>6. Local certified search</h3>
+            <p>
+              After the final exact count, only the residual rank error remains.
+              If &pi;(x) &lt; n, the program sieves forward until it has observed
+              n - &pi;(x) primes; otherwise it sieves backward and skips
+              &pi;(x) - n primes. The segment is odd-only. Each base prime p
+              contributes the first marked odd index and a stride of p odd slots.
+            </p>
+            <figure class="equation" aria-label="Odd segment index formula">
+              <math display="block">
+                <mtable>
+                  <mtr>
+                    <mtd>
+                      <mi>k</mi>
+                      <mo>=</mo>
+                      <mfrac>
+                        <mrow><mi>m</mi><mo>-</mo><mi>low</mi></mrow>
+                        <mn>2</mn>
+                      </mfrac>
+                    </mtd>
+                  </mtr>
+                  <mtr>
+                    <mtd>
+                      <mi>m</mi>
+                      <mo>=</mo>
+                      <mi>min</mi>
+                      <mo>{</mo>
+                      <mi>q</mi>
+                      <mo>&ge;</mo>
+                      <mi>low</mi>
+                      <mo>:</mo>
+                      <mi>q</mi>
+                      <mo>&equiv;</mo>
+                      <mn>0</mn>
+                      <mo>(</mo><mi>mod</mi><mo>&ApplyFunction;</mo><mi>p</mi><mo>)</mo>
+                      <mo>,</mo>
+                      <mi>q</mi>
+                      <mtext> odd</mtext>
+                      <mo>}</mo>
+                    </mtd>
+                  </mtr>
+                </mtable>
+              </math>
+            </figure>
+          </section>
+
+          <section class="paper-step">
+            <h3>Algorithm summary</h3>
+            <ol class="algorithm-list">
+              <li>Compute x<sub>0</sub> from the asymptotic inverse.</li>
+              <li>Compute r<sub>0</sub> = &pi;(x<sub>0</sub>) exactly by Lehmer counting.</li>
+              <li>If |r<sub>0</sub> - n| is large, compute x<sub>1</sub>, recount exactly, and keep the coordinate with smaller rank error.</li>
+              <li>Segment-sieve forward or backward from the certified coordinate until the nth prime is reached.</li>
+            </ol>
+          </section>
+        </div>
+      </section>
+
+      <section class="section-block" aria-labelledby="analysisTitle">
+        <p class="eyebrow">Complexity and honesty</p>
+        <h2 id="analysisTitle">Algorithmic analysis</h2>
+        <div class="analysis-grid">
+          <article>
+            <h3>Asymptotic shape</h3>
+            <p>
+              The estimator is constant-time with respect to generated tables.
+              Exact counting dominates the observed cost near the 1B and 10B
+              rank boundaries, while the final segmented sieve is proportional
+              to the residual rank error times the local average gap, roughly
+              O(&Delta; log x) odd candidates after correction.
+            </p>
+          </article>
+          <article>
+            <h3>Why exact counting dominates</h3>
+            <p>
+              Near 10B, the top-level Lehmer range contains tens of thousands
+              of terms. Many small subqueries are answered directly from
+              per-call generated rank data, but the residual recursive
+              &pi;(floor(x / p<sub>i</sub>)) calls remain the primary hot path.
+            </p>
+          </article>
+          <article>
+            <h3>Isolation boundary</h3>
+            <p>
+              The shipped WASM contains code, not an answer table. It does not
+              include sampled anchors, rank-to-prime maps, or third-party prime
+              libraries. Browser and CPU warmth can still affect wall-clock
+              timings, but algorithmic state is reset across measured calls.
+            </p>
+          </article>
+        </div>
+      </section>
+
+    </main>
+
+    <script type="module" src="app.js?v=20260528-2"></script>
+  </body>
+</html>
